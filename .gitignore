@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual envs / uv
+.venv/
+uv.lock.bak
+
+# Env / secrets
+.env
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Saved transcripts (keep the folder, ignore its contents)
+data/transcripts/*
+!data/transcripts/.gitkeep
+
+# Hayhooks runtime state
+.hayhooks/
+
+# OS
+.DS_Store

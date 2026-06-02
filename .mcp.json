@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "hayhooks": {
+      "type": "http",
+      "url": "http://localhost:1417/mcp"
+    }
+  }
+}
