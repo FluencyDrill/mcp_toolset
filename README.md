@@ -2,11 +2,17 @@
 
 A scaffold for building [Haystack](https://haystack.deepset.ai/) pipelines and serving
 them as **MCP tools** with [Hayhooks](https://github.com/deepset-ai/hayhooks) — so you
-can call them straight from Claude Code (or any MCP client).
+can call them straight from Claude (Claude Desktop, Claude Code, or Claude.ai
+integrations) or any MCP client.
 
 Write a pipeline once; Hayhooks exposes it simultaneously as a REST endpoint **and** an
 MCP tool. The tool's name comes from the wrapper folder, its description from the
 `run_api` docstring, and its input schema from `run_api`'s type-hinted arguments.
+
+**Claude is the engine.** Pipelines do deterministic work — fetch, store, retrieve,
+structure — and **Claude does the reasoning** by calling the tools. No paid LLM API and
+no embeddings are used inside the pipelines, so it runs on your Claude subscription with
+no extra per-token cost.
 
 ## Layout
 
@@ -16,12 +22,14 @@ src/mcp_toolset/
   pipelines/           # builder functions that assemble Pipelines
   prompt_templates/    # .jinja prompts + loader (scaffolding for LLM steps)
   schemas/             # pydantic models for typed pipeline I/O
-  config.py            # config (e.g. where transcripts are written)
-  stores.py            # shared, process-wide DocumentStore singleton
+  config.py            # config (transcripts dir, store backend)
+  stores.py            # store backend factory + matching keyword retriever
 pipeline_wrappers/     # HAYHOOKS_PIPELINES_DIR — thin deployables (one folder = one tool)
   text_stats/          # offline smoke-test tool
   youtube_transcript/  # fetch a transcript, archive it, return a confirmation
+  search_knowledge/    # keyword search over the stored knowledge base
 data/transcripts/      # saved transcript markdown (git-ignored)
+docker-compose.yml     # local Postgres + pgvector for the durable store
 tests/
 ```
 
@@ -35,6 +43,7 @@ serialized YAML).
 |------|--------|---------|--------------------|
 | `text_stats` | `text: str` | character/word/sentence counts + reading time | no |
 | `youtube_transcript` | `url: str` | `ArchiveResult` — `document_id`, `document_name`, `path`, `metadata` | YouTube only, no API key |
+| `search_knowledge` | `query: str`, `top_k=5`, `max_chars=500` | `SearchResults` — `query` + `hits[]` (truncated snippets + metadata) | no |
 
 ### The `youtube_transcript` pattern (context hygiene)
 
@@ -45,11 +54,42 @@ YouTubeTranscriptFetcher  ->  MetadataArchiver
                                 • return {document_id, document_name, path, metadata}
 ```
 
-The full transcript is written to a markdown **file on disk**; only **metadata** (a
-pointer) goes into the document store; and the tool returns just a small **confirmation**.
-The large transcript never enters the model's context until something explicitly opens
-the file. `MetadataArchiver` is generic — reuse it in any pipeline that needs to "save
-content + metadata and confirm what was saved".
+The full transcript is written to a markdown **file on disk** (the canonical artifact);
+the searchable text + metadata go into the **document store**; and the tool returns just
+a small **confirmation**. Context stays lean because the *tool return shape* is small —
+`search_knowledge` later returns only short snippets, never whole documents. The big
+content enters Claude's context only when it explicitly opens a file or pulls a snippet.
+`MetadataArchiver` is generic — reuse it in any pipeline that needs to "save content +
+metadata and confirm what was saved".
+
+### Knowledge store & search
+
+Everything archived lands in a shared document store, and `search_knowledge` does
+**keyword** (lexical) retrieval over it — Postgres full-text or in-memory BM25 depending
+on the backend. **No embeddings, no models, no LLM, no tokens.** It returns the top
+matches as short snippets; Claude reads them and decides what to open or compare.
+
+#### Store backends
+
+Pick the backend with `MCP_TOOLSET_STORE` (one swap point — `stores.get_document_store()`):
+
+- **`memory`** (default) — `InMemoryDocumentStore`. Zero config, ephemeral. Great for dev.
+- **`pgvector`** — durable Postgres via the [pgvector](https://github.com/pgvector/pgvector)
+  integration. Survives restarts, shareable across coworkers, and the foundation for
+  evals/measurement.
+
+Bring up Postgres locally and point the toolkit at it:
+
+```bash
+docker compose up -d                                  # Postgres + pgvector on :5432
+uv sync --extra postgres                              # install the pgvector integration
+export MCP_TOOLSET_STORE=pgvector
+export PG_CONN_STR=postgresql://mcp:mcp@localhost:5432/mcp_toolset
+make run
+```
+
+Semantic (embedding) search is a later, still-token-free upgrade (local
+`sentence-transformers` + `PgvectorEmbeddingRetriever`); keyword retrieval needs neither.
 
 ## Quickstart
 
@@ -79,6 +119,11 @@ curl -X POST localhost:1416/youtube_transcript/run \
   -H 'content-type: application/json' \
   -d '{"url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"}'
 # -> {"result": {"document_id": "...", "path": "data/transcripts/<id>.md", "metadata": {...}}}
+
+curl -X POST localhost:1416/search_knowledge/run \
+  -H 'content-type: application/json' \
+  -d '{"query": "haystack pipelines", "top_k": 3}'
+# -> {"result": {"query": "...", "hits": [{"document_id": "...", "snippet": "...", ...}]}}
 ```
 
 > Note: fetching transcripts requires outbound access to YouTube. Datacenter/cloud IPs
@@ -103,7 +148,8 @@ transport. If a client only speaks stdio, bridge it with supergateway:
 claude mcp add hayhooks -- npx -y supergateway --streamableHttp http://localhost:1417/mcp
 ```
 
-Then in Claude Code, `/mcp` lists the `text_stats` and `youtube_transcript` tools.
+Then in Claude, `/mcp` lists the `text_stats`, `youtube_transcript`, and
+`search_knowledge` tools.
 
 ## Add your own tool
 
@@ -128,9 +174,10 @@ make fmt       # ruff format + autofix
 
 ## Notes & next steps
 
-- The in-memory document store is ephemeral per process; the saved `.md` files survive
-  restarts. Swap `stores.get_document_store()` for a persistent backend when needed.
-- Transcripts are captions-only (no audio/Whisper).
-- Natural follow-ons: a `read_transcript(video_id)` tool, query/retrieval over stored
-  transcripts, and an optional LLM "answer over transcript" step using
-  `prompt_templates/` + a generator.
+- The in-memory store is ephemeral per process; use the `pgvector` backend for durable,
+  shared storage. The saved `.md` files survive restarts regardless.
+- Retrieval is keyword-only today; transcripts are captions-only (no audio/Whisper).
+- Natural follow-ons: richer analysis tools (`read_transcript(video_id)`, `find_related`,
+  cross-doc compare), more ingestion sources (web, PDFs, files), semantic/embedding
+  search, and an evals harness (golden query→doc sets, retrieval metrics) — now that the
+  store is durable and structured.

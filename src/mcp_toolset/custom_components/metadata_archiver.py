@@ -44,6 +44,10 @@ class MetadataArchiver:
     :param file_extension: extension for the on-disk content file.
     :param policy: duplicate policy for the store write (default OVERWRITE, so
         re-archiving the same ``name`` updates the existing document in place).
+    :param store_content: if ``True`` (default), the stored document's ``content`` is the
+        full ``content`` payload, so it is searchable by keyword retrieval. If ``False``,
+        only the ``label`` (or name) is stored — useful when the store should stay tiny and
+        the content lives solely on disk.
     """
 
     def __init__(
@@ -52,11 +56,13 @@ class MetadataArchiver:
         content_dir: str | Path | None = None,
         file_extension: str = ".md",
         policy: DuplicatePolicy = DuplicatePolicy.OVERWRITE,
+        store_content: bool = True,
     ) -> None:
         self.document_store = document_store
         self.content_dir = Path(content_dir) if content_dir is not None else None
         self.file_extension = file_extension
         self.policy = policy
+        self.store_content = store_content
 
     @component.output_types(document_id=str, document_name=str, path=str, metadata=dict)
     def run(
@@ -69,6 +75,9 @@ class MetadataArchiver:
         meta = dict(metadata)
         stem = _safe_stem(name) if name else uuid.uuid4().hex
 
+        if label is not None:
+            meta.setdefault("title", label)
+
         path: Path | None = None
         if self.content_dir is not None:
             self.content_dir.mkdir(parents=True, exist_ok=True)
@@ -76,9 +85,10 @@ class MetadataArchiver:
             path.write_text(content, encoding="utf-8")
             meta["path"] = str(path)
 
-        # Store a *small* document: the label (not the large content) plus metadata.
-        # Pin the id to ``name`` when given so re-archiving overwrites cleanly.
-        doc_kwargs: dict[str, Any] = {"content": label or name or stem, "meta": meta}
+        # By default store the full content so it is searchable; the title/path live in
+        # meta. Pin the id to ``name`` when given so re-archiving overwrites cleanly.
+        doc_content = content if self.store_content else (label or name or stem)
+        doc_kwargs: dict[str, Any] = {"content": doc_content, "meta": meta}
         if name:
             doc_kwargs["id"] = name
         doc = Document(**doc_kwargs)

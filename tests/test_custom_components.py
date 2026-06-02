@@ -64,12 +64,13 @@ def test_metadata_archiver_writes_file_and_store(tmp_path):
     assert written.exists()
     assert "the transcript body" in written.read_text()
 
-    # Exactly one metadata document in the store, and it does NOT hold the transcript.
+    # Exactly one document in the store; by default it holds the searchable content,
+    # with the title recorded in metadata.
     assert store.count_documents() == 1
     doc = store.filter_documents()[0]
     assert doc.id == "abc123"
-    assert doc.content == "Title"
-    assert "the transcript body" not in (doc.content or "")
+    assert "the transcript body" in (doc.content or "")
+    assert doc.meta["title"] == "Title"
 
 
 def test_metadata_archiver_overwrites_on_rerun(tmp_path):

@@ -14,6 +14,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Durable Postgres/pgvector store backend. Install with: uv sync --extra postgres
+postgres = ["pgvector-haystack>=3.0"]
+
 # Optional LLM provider for the documented "answer over transcript" upgrade.
 # Not required for the default, key-free pipelines.
 openai = []  # OpenAIGenerator ships with haystack-ai; placeholder for clarity
